@@ -11,8 +11,8 @@ import {
   ScrollView,
   Alert,
 } from 'react-native';
-import { Colors, Metrics } from '../ui/theme';
-import { formatCOP, calculateDailyFixedLoan } from '../core/financialEngine';
+import { Colors, Metrics } from '../theme';
+import { formatCOP, calculateDailyFixedLoan } from '../../core/financialEngine';
 
 interface CreateLoanModalProps {
   visible: boolean;
