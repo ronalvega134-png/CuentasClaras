@@ -6,9 +6,16 @@ class ExpoSQLiteDriver implements IDatabaseDriver {
   private db: SQLite.SQLiteDatabase | null = null;
 
   async init(): Promise<void> {
-    if (!this.db) {
-      this.db = await SQLite.openDatabaseAsync('cuentas_claras.db');
-      await this.db.execAsync(CREATE_TABLES_SQL);
+    if (this.db) return;
+    try {
+      const database = await SQLite.openDatabaseAsync('cuentas_claras.db');
+      await database.execAsync('PRAGMA foreign_keys = ON;');
+      await database.execAsync(CREATE_TABLES_SQL);
+      this.db = database;
+    } catch (error) {
+      this.db = null;
+      console.error('[DatabaseDriver] Failed to initialize database:', error);
+      throw error;
     }
   }
 
@@ -35,7 +42,11 @@ class ExpoSQLiteDriver implements IDatabaseDriver {
   }
 
   async withTransactionAsync<T>(callback: () => Promise<T>): Promise<T> {
-    return await this.getDb().withTransactionAsync(callback);
+    let result: T;
+    await this.getDb().withTransactionAsync(async () => {
+      result = await callback();
+    });
+    return result!;
   }
 }
 
