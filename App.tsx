@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   StyleSheet,
   Text,
@@ -8,56 +8,88 @@ import {
   TouchableOpacity,
   useColorScheme,
   StatusBar,
+  ActivityIndicator,
+  RefreshControl,
+  Alert,
 } from 'react-native';
 import { Colors, Metrics } from './src/ui/theme';
 import { formatCOP } from './src/core/financialEngine';
-
-interface LoanCardItem {
-  id: string;
-  borrowerName: string;
-  principalCOP: number;
-  balanceCOP: number;
-  nextPaymentDate: string;
-  status: 'AL_DIA' | 'EN_MORA' | 'PAGADO';
-}
+import { dbDriver } from './src/database/driver';
+import { LoanRepository, LoanWithBorrower } from './src/database/repository';
+import { CreateLoanModal } from './src/ui/components/CreateLoanModal';
 
 export default function App() {
   const systemTheme = useColorScheme();
   const theme = systemTheme === 'dark' ? Colors.dark : Colors.light;
 
-  const [loans] = useState<LoanCardItem[]>([
-    {
-      id: '1',
-      borrowerName: 'Carlos Mendoza (Panadería)',
-      principalCOP: 1200000,
-      balanceCOP: 680000,
-      nextPaymentDate: 'Hoy, 5:00 PM',
-      status: 'AL_DIA',
-    },
-    {
-      id: '2',
-      borrowerName: 'Marta Lucía Gómez',
-      principalCOP: 500000,
-      balanceCOP: 320000,
-      nextPaymentDate: 'Ayer (Atrasado)',
-      status: 'EN_MORA',
-    },
-    {
-      id: '3',
-      borrowerName: 'Andrés Felipe Restrepo',
-      principalCOP: 2000000,
-      balanceCOP: 1850000,
-      nextPaymentDate: '24 Oct 2026',
-      status: 'AL_DIA',
-    },
-  ]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loans, setLoans] = useState<LoanWithBorrower[]>([]);
+  const [isModalOpen, setIsModalOpen] = useState(false);
 
-  const totalOutstanding = loans.reduce((acc, curr) => acc + curr.balanceCOP, 0);
+  const repo = new LoanRepository(dbDriver);
+
+  const loadData = useCallback(async () => {
+    try {
+      await dbDriver.init();
+      const loadedLoans = await repo.getAllLoansWithBorrower();
+      setLoans(loadedLoans);
+    } catch (err: any) {
+      console.error('Error loading loans from database:', err);
+    } finally {
+      setIsLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    loadData();
+  };
+
+  const handleCreateLoan = async (data: {
+    fullName: string;
+    phone: string;
+    principalCOP: number;
+    ratePercent: number;
+    days: number;
+  }) => {
+    // 1. Create or link Contact
+    const contactId = 'contact_' + Date.now();
+    await repo.createContact({
+      id: contactId,
+      fullName: data.fullName,
+      phone: data.phone,
+    });
+
+    // 2. Create Daily Loan with schedule
+    const loanId = 'loan_' + Date.now();
+    await repo.createDailyLoan({
+      loanId,
+      contactId,
+      principalCOP: data.principalCOP,
+      rateBasisPoints: Math.round(data.ratePercent * 100),
+      days: data.days,
+      startDate: new Date(),
+    });
+
+    Alert.alert('¡Éxito!', `Préstamo creado con cronograma de ${data.days} cuotas.`);
+    await loadData();
+  };
+
+  const totalOutstanding = loans.reduce((acc, curr) => acc + curr.pendingAmountCOP, 0);
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]}>
       <StatusBar barStyle={systemTheme === 'dark' ? 'light-content' : 'dark-content'} />
-      <ScrollView contentContainerStyle={styles.container}>
+      <ScrollView
+        contentContainerStyle={styles.container}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.primary} />}
+      >
         {/* Header */}
         <View style={styles.header}>
           <Text style={[styles.subtitle, { color: theme.textSecondary }]}>CuentasClaras iOS</Text>
@@ -66,13 +98,13 @@ export default function App() {
 
         {/* Metric Summary Card */}
         <View style={[styles.metricCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
-          <Text style={[styles.metricLabel, { color: theme.textSecondary }]}>Saldo Total en Calle (COP)</Text>
+          <Text style={[styles.metricLabel, { color: theme.textSecondary }]}>Saldo Total por Cobrar (COP)</Text>
           <Text style={[styles.metricValue, { color: theme.primary }]}>
             {formatCOP(totalOutstanding)}
           </Text>
           <View style={styles.metricRow}>
             <Text style={[styles.badgeText, { color: theme.textSecondary }]}>
-              {loans.length} préstamos activos
+              {loans.length} préstamos registrados en SQLite
             </Text>
           </View>
         </View>
@@ -82,71 +114,80 @@ export default function App() {
           <Text style={[styles.sectionTitle, { color: theme.textPrimary }]}>Préstamos Activos</Text>
         </View>
 
+        {/* Loading State */}
+        {isLoading && (
+          <View style={styles.centerContainer}>
+            <ActivityIndicator size="large" color={theme.primary} />
+            <Text style={[styles.loadingText, { color: theme.textSecondary }]}>Cargando cartera local...</Text>
+          </View>
+        )}
+
+        {/* Empty State */}
+        {!isLoading && loans.length === 0 && (
+          <View style={[styles.emptyCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+            <Text style={[styles.emptyTitle, { color: theme.textPrimary }]}>Sin préstamos activos</Text>
+            <Text style={[styles.emptySubtitle, { color: theme.textSecondary }]}>
+              Toca el botón inferior para desembolsar tu primer préstamo con cronograma automático.
+            </Text>
+          </View>
+        )}
+
         {/* Loans List */}
-        {loans.map((loan) => (
-          <TouchableOpacity
-            key={loan.id}
-            activeOpacity={0.7}
-            style={[
-              styles.loanCard,
-              { backgroundColor: theme.card, borderColor: theme.cardBorder },
-            ]}
-          >
-            <View style={styles.loanCardHeader}>
-              <Text style={[styles.borrowerName, { color: theme.textPrimary }]}>
-                {loan.borrowerName}
-              </Text>
-              <View
+        {!isLoading &&
+          loans.map((item) => {
+            const isOverdue = item.loan.status === 'IN_ARREARS';
+            return (
+              <TouchableOpacity
+                key={item.loan.id}
+                activeOpacity={0.7}
                 style={[
-                  styles.statusBadge,
-                  {
-                    backgroundColor:
-                      loan.status === 'EN_MORA'
-                        ? theme.danger + '20'
-                        : theme.primary + '20',
-                  },
+                  styles.loanCard,
+                  { backgroundColor: theme.card, borderColor: theme.cardBorder },
                 ]}
               >
-                <Text
-                  style={[
-                    styles.statusText,
-                    {
-                      color: loan.status === 'EN_MORA' ? theme.danger : theme.primary,
-                    },
-                  ]}
-                >
-                  {loan.status === 'EN_MORA' ? 'En Mora' : 'Al Día'}
-                </Text>
-              </View>
-            </View>
+                <View style={styles.loanCardHeader}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.borrowerName, { color: theme.textPrimary }]}>
+                      {item.borrowerName}
+                    </Text>
+                    <Text style={[styles.borrowerPhone, { color: theme.textSecondary }]}>
+                      {item.borrowerPhone}
+                    </Text>
+                  </View>
+                  <View
+                    style={[
+                      styles.statusBadge,
+                      { backgroundColor: isOverdue ? theme.danger + '20' : theme.primary + '20' },
+                    ]}
+                  >
+                    <Text style={[styles.statusText, { color: isOverdue ? theme.danger : theme.primary }]}>
+                      {isOverdue ? 'En Mora' : 'Al Día'}
+                    </Text>
+                  </View>
+                </View>
 
-            <View style={styles.loanCardBody}>
-              <View>
-                <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Saldo pendiente</Text>
-                <Text style={[styles.fieldAmount, { color: theme.textPrimary }]}>
-                  {formatCOP(loan.balanceCOP)}
-                </Text>
-              </View>
-              <View style={styles.alignRight}>
-                <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Próximo Cobro</Text>
-                <Text
-                  style={[
-                    styles.fieldDate,
-                    {
-                      color: loan.status === 'EN_MORA' ? theme.danger : theme.textSecondary,
-                    },
-                  ]}
-                >
-                  {loan.nextPaymentDate}
-                </Text>
-              </View>
-            </View>
-          </TouchableOpacity>
-        ))}
+                <View style={styles.loanCardBody}>
+                  <View>
+                    <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Saldo pendiente</Text>
+                    <Text style={[styles.fieldAmount, { color: theme.textPrimary }]}>
+                      {formatCOP(item.pendingAmountCOP)}
+                    </Text>
+                  </View>
+                  <View style={styles.alignRight}>
+                    <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Vence</Text>
+                    <Text style={[styles.fieldDate, { color: isOverdue ? theme.danger : theme.textSecondary }]}>
+                      {item.loan.dueDate}
+                    </Text>
+                  </View>
+                </View>
+              </TouchableOpacity>
+            );
+          })}
 
         {/* New Loan Action Button */}
         <TouchableOpacity
           activeOpacity={0.85}
+          onPress={() => setIsModalOpen(true)}
           style={[styles.primaryButton, { backgroundColor: theme.primary }]}
         >
           <Text style={[styles.primaryButtonText, { color: theme.primaryText }]}>
@@ -154,6 +195,14 @@ export default function App() {
           </Text>
         </TouchableOpacity>
       </ScrollView>
+
+      {/* Creation Modal */}
+      <CreateLoanModal
+        visible={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        onSubmit={handleCreateLoan}
+        theme={theme}
+      />
     </SafeAreaView>
   );
 }
@@ -212,6 +261,31 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '600',
   },
+  centerContainer: {
+    paddingVertical: Metrics.spacingXl,
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: Metrics.spacingSm,
+    fontSize: 14,
+  },
+  emptyCard: {
+    padding: Metrics.spacingLg,
+    borderRadius: Metrics.radiusMedium,
+    borderWidth: 1,
+    alignItems: 'center',
+    marginBottom: Metrics.spacingMd,
+  },
+  emptyTitle: {
+    fontSize: 17,
+    fontWeight: '600',
+    marginBottom: Metrics.spacingXs,
+  },
+  emptySubtitle: {
+    fontSize: 14,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
   loanCard: {
     borderRadius: Metrics.radiusMedium,
     padding: Metrics.spacingMd,
@@ -222,13 +296,16 @@ const styles = StyleSheet.create({
   loanCardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     marginBottom: Metrics.spacingSm,
   },
   borrowerName: {
     fontSize: 16,
     fontWeight: '600',
-    flex: 1,
+  },
+  borrowerPhone: {
+    fontSize: 13,
+    marginTop: 2,
   },
   statusBadge: {
     paddingHorizontal: 8,

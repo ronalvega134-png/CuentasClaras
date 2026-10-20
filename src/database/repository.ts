@@ -9,6 +9,14 @@ export interface IDatabaseDriver {
   withTransactionAsync<T>(callback: () => Promise<T>): Promise<T>;
 }
 
+export interface LoanWithBorrower {
+  loan: Loan;
+  borrowerName: string;
+  borrowerPhone: string;
+  totalDueCOP: number;
+  pendingAmountCOP: number;
+}
+
 export class LoanRepository {
   constructor(private db: IDatabaseDriver) {}
 
@@ -35,6 +43,28 @@ export class LoanRepository {
       createdAt: now,
       updatedAt: now,
     };
+  }
+
+  async getAllContacts(): Promise<Contact[]> {
+    const rows = await this.db.getAllAsync<{
+      id: string;
+      full_name: string;
+      phone: string;
+      document_id: string | null;
+      notes: string | null;
+      created_at: string;
+      updated_at: string;
+    }>(`SELECT * FROM contacts ORDER BY full_name ASC`);
+
+    return rows.map((r) => ({
+      id: r.id,
+      fullName: r.full_name,
+      phone: r.phone,
+      documentId: r.document_id || undefined,
+      notes: r.notes || undefined,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    }));
   }
 
   async createDailyLoan(params: {
@@ -119,15 +149,7 @@ export class LoanRepository {
     });
   }
 
-  async getAllLoansWithBorrower(): Promise<
-    Array<{
-      loan: Loan;
-      borrowerName: string;
-      borrowerPhone: string;
-      totalDueCOP: number;
-      pendingAmountCOP: number;
-    }>
-  > {
+  async getAllLoansWithBorrower(): Promise<LoanWithBorrower[]> {
     const rows = await this.db.getAllAsync<{
       id: string;
       contact_id: string;
@@ -151,7 +173,7 @@ export class LoanRepository {
        ORDER BY l.created_at DESC`
     );
 
-    const result = [];
+    const result: LoanWithBorrower[] = [];
     for (const r of rows) {
       // Calculate pending installments balance
       const installments = await this.db.getAllAsync<{ expected_amount_cop: number }>(
